@@ -44,3 +44,6 @@ samconfig.toml
 .aws-sam
 .idea
 .mvn
+
+## Firebase
+src/main/java/cloud/adamind/saio/payments/credentials/serviceAccountKey.json
