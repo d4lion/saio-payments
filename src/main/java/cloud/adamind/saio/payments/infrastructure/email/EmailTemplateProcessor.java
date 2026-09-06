@@ -1,6 +1,6 @@
-package cloud.adamind.saio.payments.service.email;
+package cloud.adamind.saio.payments.infrastructure.email;
 
-import cloud.adamind.saio.payments.service.email.model.EmailTemplateModel;
+import cloud.adamind.saio.payments.model.EmailTemplateModel;
 import io.pebbletemplates.pebble.PebbleEngine;
 import io.pebbletemplates.pebble.template.PebbleTemplate;
 

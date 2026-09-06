@@ -1,4 +1,4 @@
-package cloud.adamind.saio.payments.service;
+package cloud.adamind.saio.payments.infrastructure.s3;
 
 import org.slf4j.Logger;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -6,9 +6,9 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
-public class S3Service {
+public class S3StorageAdapter {
 
-    private final static Logger log = org.slf4j.LoggerFactory.getLogger(S3Service.class);
+    private final static Logger log = org.slf4j.LoggerFactory.getLogger(S3StorageAdapter.class);
 
     private final S3Client s3 = S3Client.builder()
             .region(Region.US_EAST_1)

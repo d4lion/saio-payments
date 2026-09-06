@@ -1,4 +1,4 @@
-package cloud.adamind.saio.payments.service;
+package cloud.adamind.saio.payments.infrastructure.qr;
 
 import com.google.zxing.BarcodeFormat;
 import com.google.zxing.EncodeHintType;
@@ -13,9 +13,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.Map;
 
-public class QrCodeService {
+public class ZxingQrCodeGenerator {
 
-    private static final Logger log = LoggerFactory.getLogger(QrCodeService.class);
+    private static final Logger log = LoggerFactory.getLogger(ZxingQrCodeGenerator.class);
 
     public byte[] generate(String content) {
 
@@ -54,6 +54,5 @@ public class QrCodeService {
         }
 
     }
-
 
 }

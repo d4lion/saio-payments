@@ -1,4 +1,4 @@
-package cloud.adamind.saio.payments.service;
+package cloud.adamind.saio.payments.infrastructure.firebase;
 
 import cloud.adamind.saio.payments.config.FirebaseConfig;
 import com.google.firebase.auth.FirebaseAuth;
@@ -7,14 +7,14 @@ import com.google.firebase.auth.UserRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class FirebaseAuthService {
+public class FirebaseAuthAdapter {
 
-    private final static Logger log =  LoggerFactory.getLogger(FirebaseAuthService.class);
+    private final static Logger log =  LoggerFactory.getLogger(FirebaseAuthAdapter.class);
 
     private final FirebaseAuth auth;
 
 
-    public  FirebaseAuthService(FirebaseConfig config) {
+    public FirebaseAuthAdapter(FirebaseConfig config) {
         this.auth = config.auth();
         log.info("Firebase Auth service started");
     }

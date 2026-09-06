@@ -1,4 +1,4 @@
-package cloud.adamind.saio.payments.service;
+package cloud.adamind.saio.payments.infrastructure.email;
 
 import com.resend.Resend;
 import com.resend.core.exception.ResendException;
@@ -7,13 +7,13 @@ import com.resend.services.emails.model.CreateEmailResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class EmailService {
+public class ResendEmailAdapter {
 
-    private final static Logger log = LoggerFactory.getLogger(EmailService.class);
+    private final static Logger log = LoggerFactory.getLogger(ResendEmailAdapter.class);
 
     private final Resend resend;
 
-    public EmailService(){
+    public ResendEmailAdapter(){
        this.resend = new Resend(System.getenv("RESEND_MAILING_API_KEY"));
        log.info("Resend email service started");
     }
