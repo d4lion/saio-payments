@@ -11,9 +11,9 @@ public class UsersRepository {
         this.db = db;
     }
 
-    public void save(DatabaseUserModel user, String authUserId) {
+    public void save(DatabaseUserModel user) {
         db.collection("users")
-                .document(authUserId)
+                .document(user.getUid())
                 .set(user);
     }
 

@@ -15,11 +15,15 @@ public class TransactionsRepository {
     }
 
 
-    public void save(WompiWebhookEvent event) throws ExecutionException, InterruptedException {
-        db.collection("transactions")
-                .document(event.getData().getTransaction().getId())
-                .set(event)
-                .get();
+    public void save(WompiWebhookEvent event) {
+        try {
+            db.collection("transactions")
+                    .document(event.getData().getTransaction().getId())
+                    .set(event)
+                    .get();
+        } catch (InterruptedException | ExecutionException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     public boolean exists(String transactionId) {
