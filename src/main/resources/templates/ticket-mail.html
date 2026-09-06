@@ -193,48 +193,17 @@
                   </table>
 
                   <!-- ==============================
-                       PASAPORTE DE ACCESO (QR CARD)
+                       NOTIFICACIÓN DE TICKET ADJUNTO
                        ============================== -->
                   <table width="100%" border="0" cellspacing="0" cellpadding="0" style="margin-bottom:28px;">
                     <tr>
-                      <td style="background-color:#FFFFFF;border:1px solid #E2E8F0;border-top:4px solid #4F46E5;border-radius:14px;padding:32px 24px;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.02);">
-
-                        <h3 style="margin:0 0 6px 0;padding:0;font-size:17px;font-weight:700;color:#0F172A;">
-                          Tu pase de entrada
-                        </h3>
-
-                        <p style="margin:0 0 20px 0;padding:0;font-size:14px;color:#64748B;line-height:1.5;">
-                          Muéstrale este código QR al equipo en la puerta y entras de una.
+                      <td style="background-color:#EEF2FF;border:1px solid #C7D2FE;border-radius:14px;padding:24px;text-align:center;">
+                        <p style="margin:0 0 6px 0;padding:0;font-size:16px;font-weight:700;color:#3730A3;">
+                          📎 Tu entrada oficial viene adjunta en PDF
                         </p>
-
-                        <!-- Contenedor QR Centrado -->
-                        <table border="0" cellspacing="0" cellpadding="0" align="center" style="margin:0px auto 16px auto;">
-                          <tr>
-                            <td style="background-color:#FFFFFF;border:1px solid #E2E8F0;border-radius:16px;padding:16px;width:180px;height:180px;text-align:center;vertical-align:middle;box-shadow:0 8px 24px rgba(0,0,0,0.06);">
-                              <img src="{{ model.qr_code }}"
-                                   alt="QR Entrada SAIO XV"
-                                   width="180"
-                                   height="180"
-                                   style="display:block;border:0;outline:none;text-decoration:none;border-radius:8px;margin:0 auto;" />
-                            </td>
-                          </tr>
-                        </table>
-
-                        <!-- Monospace Order Tag -->
-                        <table border="0" cellspacing="0" cellpadding="0" align="center" style="margin:0 auto 16px auto;">
-                          <tr>
-                            <td style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px;padding:6px 16px;">
-                              <span style="font-size:13px;font-weight:700;color:#4F46E5;font-family:'SF Mono',Consolas,monospace;letter-spacing:1px;">
-                                #{{ model.transaction_id }}
-                              </span>
-                            </td>
-                          </tr>
-                        </table>
-
-                        <p style="margin:0;padding:0;font-size:13px;color:#64748B;line-height:1.5;max-width:380px;margin-left:auto;margin-right:auto;">
-                          Tenlo listo en tu celular. Recuerda que esta boleta es personal e intransferible, ¡cuídala bastante!
+                        <p style="margin:0;padding:0;font-size:13px;color:#4338CA;line-height:1.5;">
+                          Hemos adjuntado tu ticket digital en formato PDF a este correo con tu código QR de acceso. Puedes guardarlo en tu celular para ingresar rápidamente al evento.
                         </p>
-
                       </td>
                     </tr>
                   </table>
