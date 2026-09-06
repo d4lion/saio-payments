@@ -6,16 +6,18 @@ import cloud.adamind.saio.payments.dto.Transaction;
 import cloud.adamind.saio.payments.dto.WompiWebhookEvent;
 import cloud.adamind.saio.payments.exception.TransactionProcessedException;
 import cloud.adamind.saio.payments.exception.UnauthorizedException;
+import cloud.adamind.saio.payments.infrastructure.email.ResendEmailAdapter;
+import cloud.adamind.saio.payments.infrastructure.qr.ZxingQrCodeGenerator;
+import cloud.adamind.saio.payments.infrastructure.s3.S3StorageAdapter;
 import cloud.adamind.saio.payments.model.DatabaseUserModel;
 import cloud.adamind.saio.payments.repository.TransactionsRepository;
 import cloud.adamind.saio.payments.repository.UsersRepository;
 import cloud.adamind.saio.payments.security.WompiSignatureVerifier;
-import cloud.adamind.saio.payments.service.email.EmailTemplateProcessor;
-import cloud.adamind.saio.payments.service.email.model.TicketEmailModel;
+import cloud.adamind.saio.payments.infrastructure.email.EmailTemplateProcessor;
+import cloud.adamind.saio.payments.model.TicketEmailModel;
 import cloud.adamind.saio.payments.util.Role;
 import cloud.adamind.saio.payments.util.WompiTransactionUpdates;
 import com.google.cloud.Timestamp;
-import com.google.firebase.auth.FirebaseAuthException;
 import com.google.firebase.auth.UserRecord;
 import com.resend.core.exception.ResendException;
 import org.slf4j.Logger;
@@ -23,7 +25,6 @@ import org.slf4j.LoggerFactory;
 
 
 import java.text.MessageFormat;
-import java.util.concurrent.ExecutionException;
 
 public class PaymentService {
     // Utils
@@ -48,22 +49,84 @@ public class PaymentService {
     // Logs y Trace
     private static final Logger log = LoggerFactory.getLogger(PaymentService.class);
 
+    /**
+     * Procesa una transacción aprobada.
+     *
+     * @param event El evento del webhook de Wompi.
+     */
     public void processApprovedTransaction(WompiWebhookEvent event) {
+        // Se guarda el registro de que es genuina la existencia de la transacción
+        transactionsRepository.save(event);
+
+        AccountService accountService = new AccountService(firebaseConfig);
+
+        // Transaction Data
         Transaction transaction = event.getData().getTransaction();
+        String amountInCents = transaction.getAmountInCents().toString();
+        String amountParsed = String.format("%.2f", Double.parseDouble(amountInCents) / 100);
+        String paymentDescription = transaction.getPaymentMethod().getPaymentDescription();
 
         // Customer
         String customerLegalId = transaction.getCustomerData().getLegalId();
+        String customerFullName = transaction.getCustomerData().getFullName();
+        String customerPhoneNumber =  transaction.getCustomerData().getPhoneNumber();
 
         // Transaction
         String transactionId =  transaction.getId();
 
-        sendTransactionEmailConfirmation(event, generateUrlQrCode(customerLegalId, transactionId));
+        // Datos usados para la creacion del usuario
+        String accountUserEmail = "";
+        String accountUserLegalId = "";
 
-        createUserAndSaveTransaction(event);
+        for (CustomerReference customerReference : transaction.getCustomerData().getCustomerReferences()) {
+            if ("correo del asistente".equalsIgnoreCase(customerReference.getLabel()) ) {
+                accountUserEmail = customerReference.getValue();
+            } else if ("cedula del asistente".equalsIgnoreCase(customerReference.getLabel())) {
+                accountUserLegalId = customerReference.getValue();
+            }
+        }
+
+        // Creación del usuario en el sistema Auth de Firebase
+        UserRecord account = accountService.createAccount(
+                accountUserEmail,
+                accountUserLegalId
+        );
+
+        // Creación del usuario para su uso en las entidades del sistema
+        usersRepository.save(
+                DatabaseUserModel.builder()
+                        .uid(account.getUid())
+                        .nombre(customerFullName)
+                        .rol(String.valueOf(Role.ASISTENTE))
+                        .telefono(customerPhoneNumber)
+                        .cedula(accountUserLegalId)
+                        .correo(accountUserEmail)
+                        .fechaCreacion(Timestamp.now().toString())
+                        .boleta(transaction.getPaymentMethod().getPaymentDescription())
+                        .build()
+        );
+
+
+        // Generación del ticket para el correo
+        TicketEmailModel ticketModel = TicketEmailModel.builder()
+                .transaction_id(transactionId)
+                .amount(amountParsed)
+                .customer_email(accountUserEmail)
+                .payment_description(paymentDescription)
+                .qr_code(generateUrlQrCode(accountUserLegalId, transactionId))
+                .build();
+
+        // Envio de confirmacíon de compra exitosa
+        sendEmailConfirmationOfApprovedTransaction(ticketModel, accountUserEmail);
 
         log.info("Event processed successfully: {}", event.getEvent());
 
     }
+
+    /**
+     * Se encarga de procesar y verificar la veracidad de la transacción en sus estados aprobados y declinados
+     * @param event El evento crudo que llegas desde el webhook de wompi
+     */
 
     public void process(WompiWebhookEvent event) {
 
@@ -92,6 +155,7 @@ public class PaymentService {
 
         // La transacción es diferente de aprovada
         if (!WompiTransactionUpdates.APPROVED.getStatus().equalsIgnoreCase(transactionStatus)) {
+            transactionsRepository.save(event);
             log.info("Ignoring transaction {} because its status is {}", transaction.getId(), transactionStatus);
             return;
         }
@@ -101,14 +165,14 @@ public class PaymentService {
     }
 
     private String generateUrlQrCode(String customerLegalId, String transactionId) {
-        final S3Service s3Service = new S3Service();
-        final QrCodeService qrCodeService = new QrCodeService();
+        final S3StorageAdapter s3StorageAdapter = new S3StorageAdapter();
+        final ZxingQrCodeGenerator zxingQrCodeGenerator = new ZxingQrCodeGenerator();
 
 
         // Se realiza la generacion del QrCode en tiempo de ejecución
-        byte[] qrCode = qrCodeService.generate(customerLegalId);
+        byte[] qrCode = zxingQrCodeGenerator.generate(customerLegalId);
 
-        return s3Service.uploadBytes(
+        return s3StorageAdapter.uploadBytes(
                 "saioxv",
                 String.format("users/%s/qr-code/%s.png", customerLegalId, transactionId),
                 qrCode,
@@ -118,107 +182,24 @@ public class PaymentService {
 
     }
 
-    private void createUserAndSaveTransaction(WompiWebhookEvent event) {
-        final FirebaseAuthService auth = new FirebaseAuthService(firebaseConfig);
-
-        Transaction transaction = event.getData().getTransaction();
-
-        // Customer
-        String customerEmail = transaction.getCustomerEmail();
-        String customerFullName = transaction.getCustomerData().getFullName();
-        String customerLegalId = transaction.getCustomerData().getLegalId();
-        String customerPhoneNumber = transaction.getCustomerData().getPhoneNumber();
-
-        // Datos usados para la creacion del usuario
-        String accountUserEmail = "";
-        String accountUserLegalId = "";
-
-        for (CustomerReference customerReference : transaction.getCustomerData().getCustomerReferences()) {
-            if ("correo del asistente".equalsIgnoreCase(customerReference.getLabel()) ) {
-                accountUserEmail = customerReference.getValue();
-            } else if ("cedula del asistente".equalsIgnoreCase(customerReference.getLabel())) {
-                accountUserLegalId = customerReference.getValue();
-            }
-        }
-
-
-        try {
-
-            UserRecord user = auth.createUser(
-                    accountUserEmail,
-                    accountUserLegalId
-            );
-
-            usersRepository.save(
-                    DatabaseUserModel.builder()
-                            .cedula(accountUserLegalId)
-                            .correo(accountUserEmail)
-                            .fechaCreacion(String.valueOf(Timestamp.now()))
-                            .nombre(customerFullName)
-                            .puntos(0)
-                            .rol(String.valueOf(Role.ASISTENTE).toLowerCase())
-                            .telefono(customerPhoneNumber)
-                            .uid(user.getUid())
-                            .build(),
-                    user.getUid()
-            );
-
-
-        } catch (FirebaseAuthException e) {
-            throw new RuntimeException(e);
-        }
-
-        saveTransaction(event);
-    }
-
-    private void saveTransaction(WompiWebhookEvent event) {
-        try {
-            transactionsRepository.save(event);
-        } catch (ExecutionException | InterruptedException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    private void sendTransactionEmailConfirmation(WompiWebhookEvent event, String qrCodeUrl) {
-        final EmailService emailService = new EmailService();
+    private void sendEmailConfirmationOfApprovedTransaction(TicketEmailModel model, String emailTo) {
+        final ResendEmailAdapter resendEmailAdapter = new ResendEmailAdapter();
         final EmailTemplateProcessor templateProcessor = new EmailTemplateProcessor();
-
-        Transaction transaction = event.getData().getTransaction();
-
-        // Customer
-        String customerEmail = transaction.getCustomerEmail();
-        String customerFullName = transaction.getCustomerData().getFullName();
-
-        // Transaction
-        String transactionId =  transaction.getId();
-        String transactionAmountInCents = transaction.getAmountInCents().toString();
-        String transactionPaymentDescription = transaction.getPaymentMethod().getPaymentDescription();
-
-        TicketEmailModel model = TicketEmailModel.builder()
-                .transaction_id(transactionId)
-                .amount(transactionAmountInCents)
-                .customer_email(customerEmail)
-                .customer_name(customerFullName)
-                .event_date(SAIO_EVENT_DAY)
-                .event_location(SAIO_EVENT_LOCATION)
-                .payment_description(transactionPaymentDescription)
-                .qr_code(qrCodeUrl)
-                .build();
 
         String HTML = templateProcessor.render(model);
 
         try {
-            emailService.sendEmail(
+            resendEmailAdapter.sendEmail(
                     MAILING_FROM,
-                    customerEmail,
+                    emailTo,
                     MAILING_PAYMENT_SUCCESS_SUBJECT,
                     HTML
             );
+
         } catch (ResendException e) {
-            throw new RuntimeException(MessageFormat.format("Error realizando el envio del correo para: {0}", customerEmail), e);
+            throw new RuntimeException(MessageFormat.format("Error realizando el envio del correo para: {0}", model.getCustomer_email()), e);
         }
     }
-
 
 }
 
