@@ -1,5 +1,5 @@
-import cloud.adamind.saio.payments.service.QrCodeService;
-import cloud.adamind.saio.payments.service.S3Service;
+import cloud.adamind.saio.payments.infrastructure.qr.ZxingQrCodeGenerator;
+import cloud.adamind.saio.payments.infrastructure.s3.S3StorageAdapter;
 
 import java.util.UUID;
 
@@ -7,10 +7,10 @@ public class QrCodeS3Test {
 
     public static void main(String[] args) {
 
-        QrCodeService qrCodeService = new QrCodeService();
-        S3Service s3 = new S3Service();
+        ZxingQrCodeGenerator zxingQrCodeGenerator = new ZxingQrCodeGenerator();
+        S3StorageAdapter s3 = new S3StorageAdapter();
 
-        byte[] qrCode = qrCodeService.generate("1018234129");
+        byte[] qrCode = zxingQrCodeGenerator.generate("1018234129");
 
         String qrCodeUrl = s3.uploadBytes(
                 "saioxv",

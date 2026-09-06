@@ -1,7 +1,7 @@
-import cloud.adamind.saio.payments.service.QrCodeService;
-import cloud.adamind.saio.payments.service.S3Service;
-import cloud.adamind.saio.payments.service.email.EmailTemplateProcessor;
-import cloud.adamind.saio.payments.service.email.model.TicketEmailModel;
+import cloud.adamind.saio.payments.infrastructure.qr.ZxingQrCodeGenerator;
+import cloud.adamind.saio.payments.infrastructure.s3.S3StorageAdapter;
+import cloud.adamind.saio.payments.infrastructure.email.EmailTemplateProcessor;
+import cloud.adamind.saio.payments.model.TicketEmailModel;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -14,10 +14,10 @@ public class EmailPreviewTest {
         EmailTemplateProcessor processor =
                 new EmailTemplateProcessor();
 
-        QrCodeService qrCodeService = new QrCodeService();
-        S3Service s3 = new S3Service();
+        ZxingQrCodeGenerator zxingQrCodeGenerator = new ZxingQrCodeGenerator();
+        S3StorageAdapter s3 = new S3StorageAdapter();
 
-        byte[] qrCode = qrCodeService.generate("1018234129");
+        byte[] qrCode = zxingQrCodeGenerator.generate("1018234129");
 
         String qrCodeUrl = s3.uploadBytes(
                 "saioxv",
