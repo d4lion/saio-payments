@@ -165,8 +165,8 @@ public class PaymentService {
         final String finalPaymentDescription = paymentDescription;
         final String finalCustomerFullName = customerFullName;
 
-        // Rama 1: Creación de usuario en Firebase Auth y guardado en Firestore (Paralelo)
-        CompletableFuture<Void> userTask = CompletableFuture.runAsync(() -> {
+        // Rama 1: Creación de usuario en Firebase Auth y guardado en Firestore
+        CompletableFuture<UserRecord> accountTask = CompletableFuture.supplyAsync(() -> {
             UserRecord account = accountService.createOrGetAccount(
                     finalAccountUserEmail,
                     finalAccountUserLegalId
@@ -184,18 +184,20 @@ public class PaymentService {
                             .boleta(finalPaymentDescription)
                             .build()
             );
+            return account;
         }, EXECUTOR);
 
-        // Rama 2: Generación del código QR y renderizado del PDF oficial (Paralelo)
-        CompletableFuture<byte[]> pdfTask = CompletableFuture.supplyAsync(() -> {
-            byte[] qrBytes = zxingQrCodeGenerator.generate(finalAccountUserLegalId);
+        // Rama 2: Generación del código QR basado en el Account ID (account.getUid()) y renderizado del PDF oficial
+        CompletableFuture<byte[]> pdfTask = accountTask.thenApplyAsync(account -> {
+            String accountId = account.getUid();
+            byte[] qrBytes = zxingQrCodeGenerator.generate(accountId);
             String qrBase64 = "data:image/png;base64," + Base64.getEncoder().encodeToString(qrBytes);
 
             TicketEmailModel pdfModel = TicketEmailModel.builder()
                     .transaction_id(transactionId)
                     .amount(amountParsed)
-                    .customer_name(finalCustomerFullName)
-                    .customer_email(finalAccountUserLegalId)
+                    .customer_email(finalAccountUserEmail)
+                    .customer_legal_id(finalAccountUserLegalId)
                     .payment_description(finalPaymentDescription)
                     .qr_code(qrBase64)
                     .build();
@@ -204,10 +206,7 @@ public class PaymentService {
             return pdfGeneratorAdapter.generatePdfFromHtml(pdfHtml);
         }, EXECUTOR);
 
-        // Punto de Sincronización: Esperar a que la creación de usuario y la generación del PDF finalicen
-        CompletableFuture.allOf(userTask, pdfTask).join();
-
-        // Obtener los bytes del PDF de forma segura
+        // Punto de Sincronización: Esperar a que la generación del PDF (y la cuenta de usuario) finalice
         byte[] pdfBytes = pdfTask.join();
 
         // Generación del modelo para el correo HTML
@@ -291,7 +290,7 @@ public class PaymentService {
                     emailTo,
                     MAILING_PAYMENT_SUCCESS_SUBJECT,
                     html,
-                    "Entrada_SAIO_XV.pdf",
+                    "entrada.pdf",
                     pdfBytes
             );
         } catch (ResendException e) {
