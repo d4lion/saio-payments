@@ -13,6 +13,14 @@ public class EmailTemplateProcessor {
             .Builder()
             .build();
 
+    public EmailTemplateProcessor() {
+        try {
+            // Pre-compila la plantilla en Cold Start
+            engine.getTemplate("templates/ticket-mail.html");
+        } catch (Exception ignored) {
+        }
+    }
+
     public String render(EmailTemplateModel model) {
         try {
             PebbleTemplate template = engine.getTemplate(

@@ -32,4 +32,9 @@ public class FirebaseAuthAdapter {
         return auth.createUser(request);
 
     }
+
+    public UserRecord getUserByEmail(String email) throws FirebaseAuthException {
+        log.info("Fetching user by email {}", email);
+        return auth.getUserByEmail(email);
+    }
 }

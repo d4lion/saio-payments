@@ -13,6 +13,9 @@ target/
 *.iml
 *.ipr
 
+#Testing Mail
+ticket.html
+
 ### Eclipse ###
 .apt_generated
 .classpath

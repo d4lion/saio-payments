@@ -15,6 +15,11 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 
 public class FirebaseConfig {
+    static {
+        System.setProperty("java.net.preferIPv4Stack", "true");
+        System.setProperty("java.net.preferIPv4Addresses", "true");
+    }
+
     private final Firestore firestore;
     private final FirebaseAuth auth;
 
