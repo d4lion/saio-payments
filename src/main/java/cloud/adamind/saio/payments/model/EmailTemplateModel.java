@@ -1,4 +1,4 @@
-package cloud.adamind.saio.payments.service.email.model;
+package cloud.adamind.saio.payments.model;
 
 public interface EmailTemplateModel {
     String getTemplateName();
