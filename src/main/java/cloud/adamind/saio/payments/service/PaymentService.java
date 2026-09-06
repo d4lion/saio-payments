@@ -6,15 +6,15 @@ import cloud.adamind.saio.payments.dto.Transaction;
 import cloud.adamind.saio.payments.dto.WompiWebhookEvent;
 import cloud.adamind.saio.payments.exception.TransactionProcessedException;
 import cloud.adamind.saio.payments.exception.UnauthorizedException;
+import cloud.adamind.saio.payments.infrastructure.email.EmailTemplateProcessor;
 import cloud.adamind.saio.payments.infrastructure.email.ResendEmailAdapter;
 import cloud.adamind.saio.payments.infrastructure.qr.ZxingQrCodeGenerator;
 import cloud.adamind.saio.payments.infrastructure.s3.S3StorageAdapter;
 import cloud.adamind.saio.payments.model.DatabaseUserModel;
+import cloud.adamind.saio.payments.model.TicketEmailModel;
 import cloud.adamind.saio.payments.repository.TransactionsRepository;
 import cloud.adamind.saio.payments.repository.UsersRepository;
 import cloud.adamind.saio.payments.security.WompiSignatureVerifier;
-import cloud.adamind.saio.payments.infrastructure.email.EmailTemplateProcessor;
-import cloud.adamind.saio.payments.model.TicketEmailModel;
 import cloud.adamind.saio.payments.util.Role;
 import cloud.adamind.saio.payments.util.WompiTransactionUpdates;
 import com.google.cloud.Timestamp;
@@ -23,31 +23,86 @@ import com.resend.core.exception.ResendException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-
+import java.math.BigDecimal;
 import java.text.MessageFormat;
+import java.text.NumberFormat;
+import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class PaymentService {
-    // Utils
-    private final FirebaseConfig firebaseConfig = new FirebaseConfig();
+    // Executor de Virtual Threads para tareas E/S concurrentes en Java 21
+    private static final ExecutorService EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
 
-    // Seguridad
-    private final WompiSignatureVerifier verifier = new WompiSignatureVerifier();
+    // Dependencias e Infraestructura
+    private final FirebaseConfig firebaseConfig;
+    private final WompiSignatureVerifier verifier;
+    private final UsersRepository usersRepository;
+    private final TransactionsRepository transactionsRepository;
+    private final AccountService accountService;
+    private final S3StorageAdapter s3StorageAdapter;
+    private final ZxingQrCodeGenerator zxingQrCodeGenerator;
+    private final ResendEmailAdapter resendEmailAdapter;
+    private final EmailTemplateProcessor templateProcessor;
 
-    // Repositorios
-    private final UsersRepository usersRepository = new UsersRepository(firebaseConfig.firestore());
-    private final TransactionsRepository transactionsRepository = new TransactionsRepository(firebaseConfig.firestore());
+    // Constantes de entorno y etiquetas
+    private static final String S3_BUCKET_NAME = System.getenv().getOrDefault("S3_BUCKET_NAME", "saioxv");
+    private static final String REF_EMAIL_LABEL = "correo del asistente";
+    private static final String REF_CEDULA_LABEL = "cedula del asistente";
 
     // Constantes de correo
     private static final String MAILING_FROM = System.getenv("MAILING_FROM");
     private static final String MAILING_PAYMENT_SUCCESS_SUBJECT = System.getenv("MAILING_PAYMENT_SUCCESS_SUBJECT");
 
-    // Constantes del evento
-    private static final String SAIO_EVENT_LOCATION =  System.getenv("SAIO_EVENT_LOCATION");
+    // Constantes del evento y formato
+    private static final String SAIO_EVENT_LOCATION = System.getenv("SAIO_EVENT_LOCATION");
     private static final String SAIO_EVENT_DAY = System.getenv("SAIO_EVENT_DAY");
     private static final String TRANSACTION_UPDATED_EVENT = "transaction.updated";
+    private static final Locale COLOMBIAN_LOCALE = Locale.forLanguageTag("es-CO");
 
     // Logs y Trace
     private static final Logger log = LoggerFactory.getLogger(PaymentService.class);
+
+    /**
+     * Constructor por defecto para integración con AWS Lambda o entornos sin DI.
+     */
+    public PaymentService() {
+        this.firebaseConfig = new FirebaseConfig();
+        this.verifier = new WompiSignatureVerifier();
+        this.usersRepository = new UsersRepository(firebaseConfig.firestore());
+        this.transactionsRepository = new TransactionsRepository(firebaseConfig.firestore());
+        this.accountService = new AccountService(firebaseConfig);
+        this.s3StorageAdapter = new S3StorageAdapter();
+        this.zxingQrCodeGenerator = new ZxingQrCodeGenerator();
+        this.resendEmailAdapter = new ResendEmailAdapter();
+        this.templateProcessor = new EmailTemplateProcessor();
+    }
+
+    /**
+     * Constructor con Inyección de Dependencias para testing y desacoplamiento.
+     */
+    public PaymentService(
+            FirebaseConfig firebaseConfig,
+            WompiSignatureVerifier verifier,
+            UsersRepository usersRepository,
+            TransactionsRepository transactionsRepository,
+            AccountService accountService,
+            S3StorageAdapter s3StorageAdapter,
+            ZxingQrCodeGenerator zxingQrCodeGenerator,
+            ResendEmailAdapter resendEmailAdapter,
+            EmailTemplateProcessor templateProcessor
+    ) {
+        this.firebaseConfig = firebaseConfig;
+        this.verifier = verifier;
+        this.usersRepository = usersRepository;
+        this.transactionsRepository = transactionsRepository;
+        this.accountService = accountService;
+        this.s3StorageAdapter = s3StorageAdapter;
+        this.zxingQrCodeGenerator = zxingQrCodeGenerator;
+        this.resendEmailAdapter = resendEmailAdapter;
+        this.templateProcessor = templateProcessor;
+    }
 
     /**
      * Procesa una transacción aprobada.
@@ -55,96 +110,128 @@ public class PaymentService {
      * @param event El evento del webhook de Wompi.
      */
     public void processApprovedTransaction(WompiWebhookEvent event) {
-        // Se guarda el registro de que es genuina la existencia de la transacción
-        transactionsRepository.save(event);
-
-        AccountService accountService = new AccountService(firebaseConfig);
+        if (event == null || event.getData() == null || event.getData().getTransaction() == null) {
+            throw new IllegalArgumentException("El evento o la transacción recibida son nulos");
+        }
 
         // Transaction Data
         Transaction transaction = event.getData().getTransaction();
-        String amountInCents = transaction.getAmountInCents().toString();
-        String amountParsed = String.format("%.2f", Double.parseDouble(amountInCents) / 100);
-        String paymentDescription = transaction.getPaymentMethod().getPaymentDescription();
+        String amountInCents = transaction.getAmountInCents() != null ? transaction.getAmountInCents().toString() : "0";
+
+        // Formateo de moneda colombiana (ej: 70000 -> 70.000)
+        BigDecimal amountInPesos = new BigDecimal(amountInCents).divide(BigDecimal.valueOf(100));
+        NumberFormat numberFormat = NumberFormat.getInstance(COLOMBIAN_LOCALE);
+        String amountParsed = numberFormat.format(amountInPesos);
+
+        String paymentDescription = "";
+        if (transaction.getPaymentMethod() != null && transaction.getPaymentMethod().getPaymentDescription() != null) {
+            paymentDescription = transaction.getPaymentMethod().getPaymentDescription().trim();
+        }
+
+        if (paymentDescription.isBlank()) {
+            paymentDescription = amountInPesos.compareTo(BigDecimal.valueOf(60000)) > 0 ? "Boleta Supernova" : "Boleta Orbita";
+        }
 
         // Customer
-        String customerLegalId = transaction.getCustomerData().getLegalId();
-        String customerFullName = transaction.getCustomerData().getFullName();
-        String customerPhoneNumber =  transaction.getCustomerData().getPhoneNumber();
+        String customerLegalId = transaction.getCustomerData() != null ? transaction.getCustomerData().getLegalId() : "";
+        String customerFullName = transaction.getCustomerData() != null ? transaction.getCustomerData().getFullName() : "";
+        String customerPhoneNumber = transaction.getCustomerData() != null ? transaction.getCustomerData().getPhoneNumber() : "";
 
-        // Transaction
-        String transactionId =  transaction.getId();
+        // Transaction ID
+        String transactionId = transaction.getId();
 
-        // Datos usados para la creacion del usuario
-        String accountUserEmail = "";
-        String accountUserLegalId = "";
+        // Datos usados para la creación del usuario (con fallback a datos principales)
+        String accountUserEmail = transaction.getCustomerEmail();
+        String accountUserLegalId = customerLegalId;
 
-        for (CustomerReference customerReference : transaction.getCustomerData().getCustomerReferences()) {
-            if ("correo del asistente".equalsIgnoreCase(customerReference.getLabel()) ) {
-                accountUserEmail = customerReference.getValue();
-            } else if ("cedula del asistente".equalsIgnoreCase(customerReference.getLabel())) {
-                accountUserLegalId = customerReference.getValue();
+        if (transaction.getCustomerData() != null && transaction.getCustomerData().getCustomerReferences() != null) {
+            for (CustomerReference customerReference : transaction.getCustomerData().getCustomerReferences()) {
+                if (REF_EMAIL_LABEL.equalsIgnoreCase(customerReference.getLabel()) && customerReference.getValue() != null) {
+                    accountUserEmail = customerReference.getValue();
+                } else if (REF_CEDULA_LABEL.equalsIgnoreCase(customerReference.getLabel()) && customerReference.getValue() != null) {
+                    accountUserLegalId = customerReference.getValue();
+                }
             }
         }
 
-        // Creación del usuario en el sistema Auth de Firebase
-        UserRecord account = accountService.createAccount(
-                accountUserEmail,
-                accountUserLegalId
-        );
+        final String finalAccountUserEmail = accountUserEmail;
+        final String finalAccountUserLegalId = accountUserLegalId;
+        final String finalPaymentDescription = paymentDescription;
 
-        // Creación del usuario para su uso en las entidades del sistema
-        usersRepository.save(
-                DatabaseUserModel.builder()
-                        .uid(account.getUid())
-                        .nombre(customerFullName)
-                        .rol(String.valueOf(Role.ASISTENTE))
-                        .telefono(customerPhoneNumber)
-                        .cedula(accountUserLegalId)
-                        .correo(accountUserEmail)
-                        .fechaCreacion(Timestamp.now().toString())
-                        .boleta(transaction.getPaymentMethod().getPaymentDescription())
-                        .build()
-        );
+        // Rama 1: Creación de usuario en Firebase Auth y guardado en Firestore (Paralelo)
+        CompletableFuture<Void> userTask = CompletableFuture.runAsync(() -> {
+            UserRecord account = accountService.createOrGetAccount(
+                    finalAccountUserEmail,
+                    finalAccountUserLegalId
+            );
 
+            usersRepository.save(
+                    DatabaseUserModel.builder()
+                            .uid(account.getUid())
+                            .nombre(customerFullName)
+                            .rol(String.valueOf(Role.ASISTENTE))
+                            .telefono(customerPhoneNumber)
+                            .cedula(finalAccountUserLegalId)
+                            .correo(finalAccountUserEmail)
+                            .fechaCreacion(Timestamp.now().toString())
+                            .boleta(finalPaymentDescription)
+                            .build()
+            );
+        }, EXECUTOR);
+
+        // Rama 2: Generación de QR y subida a AWS S3 (Paralelo)
+        CompletableFuture<String> qrTask = CompletableFuture.supplyAsync(() -> {
+            return generateUrlQrCode(finalAccountUserLegalId, transactionId);
+        }, EXECUTOR);
+
+        // Punto de Sincronización: Esperar a que AMBAS ramas terminen obligatoriamente
+        CompletableFuture.allOf(userTask, qrTask).join();
+
+        // Obtener de forma 100% segura la URL producida por la subida a S3
+        String qrCodeUrl = qrTask.join();
 
         // Generación del ticket para el correo
         TicketEmailModel ticketModel = TicketEmailModel.builder()
                 .transaction_id(transactionId)
                 .amount(amountParsed)
-                .customer_email(accountUserEmail)
+                .customer_email(finalAccountUserEmail)
                 .payment_description(paymentDescription)
-                .qr_code(generateUrlQrCode(accountUserLegalId, transactionId))
+                .qr_code(qrCodeUrl)
                 .build();
 
-        // Envio de confirmacíon de compra exitosa
-        sendEmailConfirmationOfApprovedTransaction(ticketModel, accountUserEmail);
+        // Envío de confirmación de compra exitosa
+        sendEmailConfirmationOfApprovedTransaction(ticketModel, finalAccountUserEmail);
+
+        // Se guarda la transacción exitosa al finalizar todo el flujo adecuadamente
+        transactionsRepository.save(event);
 
         log.info("Event processed successfully: {}", event.getEvent());
-
     }
 
     /**
      * Se encarga de procesar y verificar la veracidad de la transacción en sus estados aprobados y declinados
-     * @param event El evento crudo que llegas desde el webhook de wompi
+     * @param event El evento crudo que llega desde el webhook de Wompi
      */
-
     public void process(WompiWebhookEvent event) {
+        if (event == null || event.getData() == null || event.getData().getTransaction() == null) {
+            throw new IllegalArgumentException("El evento recibido no contiene datos de transacción válidos");
+        }
 
         Transaction transaction = event.getData().getTransaction();
         String transactionStatus = transaction.getStatus();
 
         log.info("Processing event: {}", event);
 
-        // La transaccion ya fue procesada antes
+        // La transacción ya fue procesada antes
         if (transactionsRepository.exists(transaction.getId())) {
             log.info("Ignoring transaction {} because it has already been processed", transaction.getId());
             throw new TransactionProcessedException(MessageFormat.format("La transacción {0} ya ha sido procesada", transaction.getId()));
         }
 
-        // La firma no es valida, se precesantaron modificaciones en el payload
+        // La firma no es válida, se presentaron modificaciones en el payload
         if (!verifier.isValid(event)) {
             log.warn("Invalid event received: {}", event);
-            throw new UnauthorizedException("Firma del evento invalida");
+            throw new UnauthorizedException("Firma del evento inválida");
         }
 
         // El evento no es de tipo transaction.updated, se ignora
@@ -153,7 +240,7 @@ public class PaymentService {
             return;
         }
 
-        // La transacción es diferente de aprovada
+        // La transacción es diferente de aprobada
         if (!WompiTransactionUpdates.APPROVED.getStatus().equalsIgnoreCase(transactionStatus)) {
             transactionsRepository.save(event);
             log.info("Ignoring transaction {} because its status is {}", transaction.getId(), transactionStatus);
@@ -161,46 +248,34 @@ public class PaymentService {
         }
 
         processApprovedTransaction(event);
-
     }
 
     private String generateUrlQrCode(String customerLegalId, String transactionId) {
-        final S3StorageAdapter s3StorageAdapter = new S3StorageAdapter();
-        final ZxingQrCodeGenerator zxingQrCodeGenerator = new ZxingQrCodeGenerator();
-
-
-        // Se realiza la generacion del QrCode en tiempo de ejecución
+        // Se realiza la generación del QrCode en tiempo de ejecución
         byte[] qrCode = zxingQrCodeGenerator.generate(customerLegalId);
 
         return s3StorageAdapter.uploadBytes(
-                "saioxv",
+                S3_BUCKET_NAME,
                 String.format("users/%s/qr-code/%s.png", customerLegalId, transactionId),
                 qrCode,
                 "image/png"
         );
-
-
     }
 
     private void sendEmailConfirmationOfApprovedTransaction(TicketEmailModel model, String emailTo) {
-        final ResendEmailAdapter resendEmailAdapter = new ResendEmailAdapter();
-        final EmailTemplateProcessor templateProcessor = new EmailTemplateProcessor();
-
-        String HTML = templateProcessor.render(model);
+        String html = templateProcessor.render(model);
 
         try {
             resendEmailAdapter.sendEmail(
                     MAILING_FROM,
                     emailTo,
                     MAILING_PAYMENT_SUCCESS_SUBJECT,
-                    HTML
+                    html
             );
-
         } catch (ResendException e) {
-            throw new RuntimeException(MessageFormat.format("Error realizando el envio del correo para: {0}", model.getCustomer_email()), e);
+            throw new RuntimeException(MessageFormat.format("Error realizando el envío del correo para: {0}", model.getCustomer_email()), e);
         }
     }
-
 }
 
 
