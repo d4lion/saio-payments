@@ -58,6 +58,14 @@
             <version>LATEST</version>
         </dependency>
 
+        <!-- Source: https://mvnrepository.com/artifact/io.github.openhtmltopdf/openhtmltopdf-pdfbox -->
+        <dependency>
+            <groupId>io.github.openhtmltopdf</groupId>
+            <artifactId>openhtmltopdf-pdfbox</artifactId>
+            <version>1.1.24</version>
+            <scope>compile</scope>
+        </dependency>
+
 
         <dependency>
             <groupId>org.projectlombok</groupId>

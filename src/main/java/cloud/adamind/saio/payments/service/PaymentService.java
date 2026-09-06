@@ -8,6 +8,7 @@ import cloud.adamind.saio.payments.exception.TransactionProcessedException;
 import cloud.adamind.saio.payments.exception.UnauthorizedException;
 import cloud.adamind.saio.payments.infrastructure.email.EmailTemplateProcessor;
 import cloud.adamind.saio.payments.infrastructure.email.ResendEmailAdapter;
+import cloud.adamind.saio.payments.infrastructure.pdf.PdfGeneratorAdapter;
 import cloud.adamind.saio.payments.infrastructure.qr.ZxingQrCodeGenerator;
 import cloud.adamind.saio.payments.infrastructure.s3.S3StorageAdapter;
 import cloud.adamind.saio.payments.model.DatabaseUserModel;
@@ -26,6 +27,7 @@ import org.slf4j.LoggerFactory;
 import java.math.BigDecimal;
 import java.text.MessageFormat;
 import java.text.NumberFormat;
+import java.util.Base64;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -45,6 +47,7 @@ public class PaymentService {
     private final ZxingQrCodeGenerator zxingQrCodeGenerator;
     private final ResendEmailAdapter resendEmailAdapter;
     private final EmailTemplateProcessor templateProcessor;
+    private final PdfGeneratorAdapter pdfGeneratorAdapter;
 
     // Constantes de entorno y etiquetas
     private static final String S3_BUCKET_NAME = System.getenv().getOrDefault("S3_BUCKET_NAME", "saioxv");
@@ -77,6 +80,7 @@ public class PaymentService {
         this.zxingQrCodeGenerator = new ZxingQrCodeGenerator();
         this.resendEmailAdapter = new ResendEmailAdapter();
         this.templateProcessor = new EmailTemplateProcessor();
+        this.pdfGeneratorAdapter = new PdfGeneratorAdapter();
     }
 
     /**
@@ -91,7 +95,8 @@ public class PaymentService {
             S3StorageAdapter s3StorageAdapter,
             ZxingQrCodeGenerator zxingQrCodeGenerator,
             ResendEmailAdapter resendEmailAdapter,
-            EmailTemplateProcessor templateProcessor
+            EmailTemplateProcessor templateProcessor,
+            PdfGeneratorAdapter pdfGeneratorAdapter
     ) {
         this.firebaseConfig = firebaseConfig;
         this.verifier = verifier;
@@ -102,6 +107,7 @@ public class PaymentService {
         this.zxingQrCodeGenerator = zxingQrCodeGenerator;
         this.resendEmailAdapter = resendEmailAdapter;
         this.templateProcessor = templateProcessor;
+        this.pdfGeneratorAdapter = pdfGeneratorAdapter;
     }
 
     /**
@@ -157,9 +163,10 @@ public class PaymentService {
         final String finalAccountUserEmail = accountUserEmail;
         final String finalAccountUserLegalId = accountUserLegalId;
         final String finalPaymentDescription = paymentDescription;
+        final String finalCustomerFullName = customerFullName;
 
-        // Rama 1: Creación de usuario en Firebase Auth y guardado en Firestore (Paralelo)
-        CompletableFuture<Void> userTask = CompletableFuture.runAsync(() -> {
+        // Rama 1: Creación de usuario en Firebase Auth y guardado en Firestore
+        CompletableFuture<UserRecord> accountTask = CompletableFuture.supplyAsync(() -> {
             UserRecord account = accountService.createOrGetAccount(
                     finalAccountUserEmail,
                     finalAccountUserLegalId
@@ -168,7 +175,7 @@ public class PaymentService {
             usersRepository.save(
                     DatabaseUserModel.builder()
                             .uid(account.getUid())
-                            .nombre(customerFullName)
+                            .nombre(finalCustomerFullName)
                             .rol(String.valueOf(Role.ASISTENTE))
                             .telefono(customerPhoneNumber)
                             .cedula(finalAccountUserLegalId)
@@ -177,30 +184,42 @@ public class PaymentService {
                             .boleta(finalPaymentDescription)
                             .build()
             );
+            return account;
         }, EXECUTOR);
 
-        // Rama 2: Generación de QR y subida a AWS S3 (Paralelo)
-        CompletableFuture<String> qrTask = CompletableFuture.supplyAsync(() -> {
-            return generateUrlQrCode(finalAccountUserLegalId, transactionId);
+        // Rama 2: Generación del código QR basado en el Account ID (account.getUid()) y renderizado del PDF oficial
+        CompletableFuture<byte[]> pdfTask = accountTask.thenApplyAsync(account -> {
+            String accountId = account.getUid();
+            byte[] qrBytes = zxingQrCodeGenerator.generate(accountId);
+            String qrBase64 = "data:image/png;base64," + Base64.getEncoder().encodeToString(qrBytes);
+
+            TicketEmailModel pdfModel = TicketEmailModel.builder()
+                    .transaction_id(transactionId)
+                    .amount(amountParsed)
+                    .customer_email(finalAccountUserEmail)
+                    .customer_legal_id(finalAccountUserLegalId)
+                    .payment_description(finalPaymentDescription)
+                    .qr_code(qrBase64)
+                    .build();
+
+            String pdfHtml = templateProcessor.renderTemplate("templates/ticket-pdf.html", pdfModel);
+            return pdfGeneratorAdapter.generatePdfFromHtml(pdfHtml);
         }, EXECUTOR);
 
-        // Punto de Sincronización: Esperar a que AMBAS ramas terminen obligatoriamente
-        CompletableFuture.allOf(userTask, qrTask).join();
+        // Punto de Sincronización: Esperar a que la generación del PDF (y la cuenta de usuario) finalice
+        byte[] pdfBytes = pdfTask.join();
 
-        // Obtener de forma 100% segura la URL producida por la subida a S3
-        String qrCodeUrl = qrTask.join();
-
-        // Generación del ticket para el correo
-        TicketEmailModel ticketModel = TicketEmailModel.builder()
+        // Generación del modelo para el correo HTML
+        TicketEmailModel mailModel = TicketEmailModel.builder()
                 .transaction_id(transactionId)
                 .amount(amountParsed)
+                .customer_name(customerFullName)
                 .customer_email(finalAccountUserEmail)
                 .payment_description(paymentDescription)
-                .qr_code(qrCodeUrl)
                 .build();
 
-        // Envío de confirmación de compra exitosa
-        sendEmailConfirmationOfApprovedTransaction(ticketModel, finalAccountUserEmail);
+        // Envío de confirmación de compra exitosa con el PDF adjunto
+        sendEmailConfirmationOfApprovedTransaction(mailModel, finalAccountUserEmail, pdfBytes);
 
         // Se guarda la transacción exitosa al finalizar todo el flujo adecuadamente
         transactionsRepository.save(event);
@@ -262,15 +281,17 @@ public class PaymentService {
         );
     }
 
-    private void sendEmailConfirmationOfApprovedTransaction(TicketEmailModel model, String emailTo) {
+    private void sendEmailConfirmationOfApprovedTransaction(TicketEmailModel model, String emailTo, byte[] pdfBytes) {
         String html = templateProcessor.render(model);
 
         try {
-            resendEmailAdapter.sendEmail(
+            resendEmailAdapter.sendEmailWithAttachment(
                     MAILING_FROM,
                     emailTo,
                     MAILING_PAYMENT_SUCCESS_SUBJECT,
-                    html
+                    html,
+                    "entrada.pdf",
+                    pdfBytes
             );
         } catch (ResendException e) {
             throw new RuntimeException(MessageFormat.format("Error realizando el envío del correo para: {0}", model.getCustomer_email()), e);

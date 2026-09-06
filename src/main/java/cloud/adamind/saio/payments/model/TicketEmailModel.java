@@ -13,6 +13,9 @@ public class TicketEmailModel implements EmailTemplateModel {
     String qr_code;
 
     @Builder.Default
+    String customer_legal_id = "N/A";
+
+    @Builder.Default
     String event_location = "Universidad Nacional - Sede Medellín";
 
     @Builder.Default

@@ -15,33 +15,27 @@ public class EmailTemplateProcessor {
 
     public EmailTemplateProcessor() {
         try {
-            // Pre-compila la plantilla en Cold Start
+            // Pre-compila plantillas en Cold Start
             engine.getTemplate("templates/ticket-mail.html");
+            engine.getTemplate("templates/ticket-pdf.html");
         } catch (Exception ignored) {
         }
     }
 
-    public String render(EmailTemplateModel model) {
+    public String renderTemplate(String templatePath, Object model) {
         try {
-            PebbleTemplate template = engine.getTemplate(
-                    "templates/" + model.getTemplateName()
-            );
-
+            PebbleTemplate template = engine.getTemplate(templatePath);
             StringWriter writer = new StringWriter();
-
-            template.evaluate(
-                    writer,
-                    Map.of("model", model)
-            );
-
+            template.evaluate(writer, Map.of("model", model));
             return writer.toString();
-
         } catch (Exception e) {
             e.printStackTrace();
+            throw new RuntimeException("Error renderizando plantilla " + templatePath, e);
         }
+    }
 
-
-        return "";
+    public String render(EmailTemplateModel model) {
+        return renderTemplate("templates/" + model.getTemplateName(), model);
     }
 
 
