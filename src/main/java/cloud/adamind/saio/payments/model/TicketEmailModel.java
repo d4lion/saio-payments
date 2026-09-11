@@ -27,6 +27,9 @@ public class TicketEmailModel implements EmailTemplateModel {
     @Builder.Default
     String payment_description = "Saio Ticket";
 
+    @Builder.Default
+    String instruction_video_url = System.getenv().getOrDefault("INSTRUCTION_VIDEO_URL", "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+
 
     @Override
     public String getTemplateName() {

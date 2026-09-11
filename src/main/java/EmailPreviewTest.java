@@ -11,20 +11,10 @@ public class EmailPreviewTest {
 
     public static void main(String[] args) {
 
-        EmailTemplateProcessor processor =
-                new EmailTemplateProcessor();
+        EmailTemplateProcessor processor = new EmailTemplateProcessor();
 
         ZxingQrCodeGenerator zxingQrCodeGenerator = new ZxingQrCodeGenerator();
-        S3StorageAdapter s3 = new S3StorageAdapter();
-
-        byte[] qrCode = zxingQrCodeGenerator.generate("1018234129");
-
-        String qrCodeUrl = s3.uploadBytes(
-                "saioxv",
-                String.format("users/%s/qr-code/%s.png", "1018234129", UUID.randomUUID()),
-                qrCode,
-                "image/png"
-        );
+        String qrCodeUrl = "https://saioxv.s3.amazonaws.com/users/1018234129/qr-code/f77409bb-e70e-4ef1-a0cb-5f0d2cc5cafc.png";
 
         System.out.println("QR Code URL: " + qrCodeUrl);
 
@@ -44,8 +34,7 @@ public class EmailPreviewTest {
         try {
             Files.writeString(
                     java.nio.file.Path.of("ticket.html"),
-                    html
-            );
+                    html);
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
