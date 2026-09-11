@@ -228,18 +228,14 @@ public class PaymentService {
     }
 
     /**
-     * Se encarga de procesar y verificar la veracidad de la transacción en sus estados aprobados y declinados
-     * @param event El evento crudo que llega desde el webhook de Wompi
+     * Valida la autenticidad y estado de procesamiento previo del evento recibido por webhook.
      */
-    public void process(WompiWebhookEvent event) {
+    public void validateWebhook(WompiWebhookEvent event) {
         if (event == null || event.getData() == null || event.getData().getTransaction() == null) {
             throw new IllegalArgumentException("El evento recibido no contiene datos de transacción válidos");
         }
 
         Transaction transaction = event.getData().getTransaction();
-        String transactionStatus = transaction.getStatus();
-
-        log.info("Processing event: {}", event);
 
         // La transacción ya fue procesada antes
         if (transactionsRepository.exists(transaction.getId())) {
@@ -252,6 +248,19 @@ public class PaymentService {
             log.warn("Invalid event received: {}", event);
             throw new UnauthorizedException("Firma del evento inválida");
         }
+    }
+
+    /**
+     * Se encarga de procesar y verificar la veracidad de la transacción en sus estados aprobados y declinados
+     * @param event El evento crudo que llega desde el webhook de Wompi
+     */
+    public void process(WompiWebhookEvent event) {
+        validateWebhook(event);
+
+        Transaction transaction = event.getData().getTransaction();
+        String transactionStatus = transaction.getStatus();
+
+        log.info("Processing event: {}", event);
 
         // El evento no es de tipo transaction.updated, se ignora
         if (!TRANSACTION_UPDATED_EVENT.equalsIgnoreCase(event.getEvent())) {

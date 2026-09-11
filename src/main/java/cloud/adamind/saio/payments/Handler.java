@@ -16,6 +16,8 @@ import java.net.HttpURLConnection;
 import java.util.Map;
 
 
+import cloud.adamind.saio.payments.infrastructure.sqs.SqsPublisherAdapter;
+
 public class Handler implements RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent> {
 
     static {
@@ -27,7 +29,18 @@ public class Handler implements RequestHandler<APIGatewayProxyRequestEvent, APIG
     private final ObjectMapper mapper = new ObjectMapper()
             .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
 
-    private final PaymentService paymentService = new PaymentService();
+    private final PaymentService paymentService;
+    private final SqsPublisherAdapter sqsPublisher;
+
+    public Handler() {
+        this.paymentService = new PaymentService();
+        this.sqsPublisher = new SqsPublisherAdapter();
+    }
+
+    public Handler(PaymentService paymentService, SqsPublisherAdapter sqsPublisher) {
+        this.paymentService = paymentService;
+        this.sqsPublisher = sqsPublisher;
+    }
 
     @Override
     public APIGatewayProxyResponseEvent handleRequest(
@@ -47,7 +60,14 @@ public class Handler implements RequestHandler<APIGatewayProxyRequestEvent, APIG
         }
 
         try {
-            paymentService.process(event);
+            paymentService.validateWebhook(event);
+            String messageId = sqsPublisher.sendMessage(request.getBody());
+
+            return createResponse(HttpURLConnection.HTTP_OK, Map.of(
+                    "status", "queued",
+                    "message", "Evento recibido y encolado exitosamente",
+                    "message_id", messageId
+            ));
         } catch (UnauthorizedException e) {
             return createResponse(HttpURLConnection.HTTP_UNAUTHORIZED, Map.of(
                     "status", "unauthorized",
@@ -58,11 +78,12 @@ public class Handler implements RequestHandler<APIGatewayProxyRequestEvent, APIG
                     "status", "error",
                     "message", e.getMessage()
             ));
+        } catch (Exception e) {
+            return createResponse(HttpURLConnection.HTTP_INTERNAL_ERROR, Map.of(
+                    "status", "error",
+                    "message", e.getMessage() != null ? e.getMessage() : "Error interno procesando evento"
+            ));
         }
-
-        return createResponse(HttpURLConnection.HTTP_OK, Map.of(
-                "status", "success"
-        ));
     }
 
     private APIGatewayProxyResponseEvent createResponse(int statusCode, Object body) {
