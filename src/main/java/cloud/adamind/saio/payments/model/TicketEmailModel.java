@@ -28,15 +28,12 @@ public class TicketEmailModel implements EmailTemplateModel {
     String payment_description = "Saio Ticket";
 
     @Builder.Default
-    String instruction_video_url = System.getenv().getOrDefault("INSTRUCTION_VIDEO_URL", "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
-
+    String instruction_guide_url = System.getenv().getOrDefault("INSTRUCTION_GUIDE_URL",
+            "https://drive.google.com/file/d/1jI6mymC4U1wP5y3U2V6fHqX3X4zFLIUG/view?usp=sharing");
 
     @Override
     public String getTemplateName() {
         return "ticket-mail.html";
     }
-
-
-
 
 }

@@ -27,6 +27,8 @@ public class EmailPreviewTest {
                 .payment_description("Ticket Standar")
                 .transaction_id("123456789")
                 .qr_code(qrCodeUrl)
+                .instruction_guide_url(
+                        "https://drive.google.com/file/d/1jI6mymC4U1wP5y3U2V6fHqX3X4zFLIUG/view?usp=sharing")
                 .build();
 
         String html = processor.render(model);
