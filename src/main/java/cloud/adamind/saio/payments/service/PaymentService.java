@@ -13,6 +13,7 @@ import cloud.adamind.saio.payments.infrastructure.qr.ZxingQrCodeGenerator;
 import cloud.adamind.saio.payments.infrastructure.s3.S3StorageAdapter;
 import cloud.adamind.saio.payments.model.DatabaseUserModel;
 import cloud.adamind.saio.payments.model.TicketEmailModel;
+import cloud.adamind.saio.payments.model.TransactionStatusEmailModel;
 import cloud.adamind.saio.payments.repository.TransactionsRepository;
 import cloud.adamind.saio.payments.repository.UsersRepository;
 import cloud.adamind.saio.payments.security.WompiSignatureVerifier;
@@ -57,6 +58,7 @@ public class PaymentService {
     // Constantes de correo
     private static final String MAILING_FROM = System.getenv("MAILING_FROM");
     private static final String MAILING_PAYMENT_SUCCESS_SUBJECT = System.getenv("MAILING_PAYMENT_SUCCESS_SUBJECT");
+    private static final String MAILING_PAYMENT_FAILED_SUBJECT = System.getenv().getOrDefault("MAILING_PAYMENT_FAILED_SUBJECT", "Hubo un problema con tu pago - Saio XV");
 
     // Constantes del evento y formato
     private static final String SAIO_EVENT_LOCATION = System.getenv("SAIO_EVENT_LOCATION");
@@ -268,10 +270,11 @@ public class PaymentService {
             return;
         }
 
-        // La transacción es diferente de aprobada
+        // La transacción no fue aprobada: guardar y notificar por correo
         if (!WompiTransactionUpdates.APPROVED.getStatus().equalsIgnoreCase(transactionStatus)) {
             transactionsRepository.save(event);
-            log.info("Ignoring transaction {} because its status is {}", transaction.getId(), transactionStatus);
+            log.info("Non-approved transaction {}. Status: {}. Sending status notification.", transaction.getId(), transactionStatus);
+            sendTransactionStatusNotification(transaction, transactionStatus);
             return;
         }
 
@@ -288,6 +291,73 @@ public class PaymentService {
                 qrCode,
                 "image/png"
         );
+    }
+
+    /**
+     * Envía un correo de novedad al pagador cuando su transacción no fue aprobada.
+     * Usa el email de referencia si existe; de lo contrario, el email principal del cliente.
+     */
+    private void sendTransactionStatusNotification(Transaction transaction, String transactionStatus) {
+        // Resolver el email destinatario: referencia tiene prioridad
+        String emailTo = transaction.getCustomerEmail();
+        if (transaction.getCustomerData() != null && transaction.getCustomerData().getCustomerReferences() != null) {
+            for (CustomerReference ref : transaction.getCustomerData().getCustomerReferences()) {
+                if (REF_EMAIL_LABEL.equalsIgnoreCase(ref.getLabel()) && ref.getValue() != null) {
+                    emailTo = ref.getValue();
+                    break;
+                }
+            }
+        }
+
+        String amountInCents = transaction.getAmountInCents() != null ? transaction.getAmountInCents().toString() : "0";
+        BigDecimal amountInPesos = new BigDecimal(amountInCents).divide(BigDecimal.valueOf(100));
+        NumberFormat numberFormat = NumberFormat.getInstance(COLOMBIAN_LOCALE);
+        String amountParsed = numberFormat.format(amountInPesos);
+
+        TransactionStatusEmailModel model = TransactionStatusEmailModel.builder()
+                .transaction_id(transaction.getId())
+                .customer_email(emailTo)
+                .amount(amountParsed)
+                .transaction_status(transactionStatus)
+                .status_label(resolveStatusLabel(transactionStatus))
+                .status_description(resolveStatusDescription(transactionStatus))
+                .build();
+
+        String html = templateProcessor.renderTemplate("templates/transaction-status-mail.html", model);
+
+        try {
+            resendEmailAdapter.sendEmail(MAILING_FROM, emailTo, MAILING_PAYMENT_FAILED_SUBJECT, html);
+            log.info("Transaction status notification sent to {} for transaction {} with status {}", emailTo, transaction.getId(), transactionStatus);
+        } catch (ResendException e) {
+            // No relanzamos para no interrumpir el flujo principal; el evento ya fue guardado.
+            log.error("Failed to send status notification to {} for transaction {}: {}", emailTo, transaction.getId(), e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Traduce el código de estado de Wompi a una etiqueta legible en español.
+     */
+    private String resolveStatusLabel(String status) {
+        if (status == null) return "Desconocido";
+        return switch (status.toUpperCase()) {
+            case "VOIDED"   -> "Anulada";
+            case "DECLINED" -> "Declinada";
+            case "ERROR"    -> "Error";
+            default         -> status;
+        };
+    }
+
+    /**
+     * Retorna una descripción amigable del estado de la transacción.
+     */
+    private String resolveStatusDescription(String status) {
+        if (status == null) return "Se presentó un inconveniente con tu transacción.";
+        return switch (status.toUpperCase()) {
+            case "VOIDED"   -> "Tu transacción fue anulada. Esto puede ocurrir cuando el tiempo de pago expiró o fue cancelada antes de completarse. Tu dinero no fue descontado.";
+            case "DECLINED" -> "Tu pago fue rechazado por la entidad bancaria. Verifica que los datos de tu tarjeta estén correctos, que tengas fondos suficientes o intenta con otro método de pago.";
+            case "ERROR"    -> "Ocurrió un error técnico al procesar tu pago. Por favor intenta de nuevo. Si el problema persiste, contáctanos.";
+            default         -> "Se presentó un inconveniente con tu transacción. Por favor contáctanos para más información.";
+        };
     }
 
     private void sendEmailConfirmationOfApprovedTransaction(TicketEmailModel model, String emailTo, byte[] pdfBytes) {
